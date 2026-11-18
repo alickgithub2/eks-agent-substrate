@@ -224,6 +224,11 @@ func (s *Setup) PluginProblem(p plugin.Plugin, chosen []string) string {
 	if s.ClusterIsNew {
 		groups = NewNodeGroups(s.AutoMode, s.Database, s.SandboxClasses, append(slices.Clone(chosen), p.ID))
 	}
+	// The AWS Nitro sandbox class makes no node group, but its isolated
+	// nodes (NodePool ate-isolated) stand in for one (plugin.AltNodes).
+	if slices.Contains(strings.Split(s.SandboxClasses, ","), ClassNitro) || slices.Contains(s.ClusterPools, "isolated") {
+		groups = append(slices.Clone(groups), "isolated")
+	}
 	ps, err := plugin.Resolve([]string{p.ID})
 	if err != nil {
 		return err.Error()

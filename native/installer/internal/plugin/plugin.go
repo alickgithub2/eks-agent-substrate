@@ -259,13 +259,24 @@ func ParsePools(out string) []string {
 	return slices.Compact(pools)
 }
 
-// MissingNodes are the groups of p's Nodes that pools lack.
+// MissingNodes are the groups of p's Nodes that pools lack. When pools lack
+// one of Nodes but have every one of p's AltNodes, nothing is missing: the
+// plugin runs on those instead (OpenClaw on the AWS Nitro sandbox's
+// isolated nodes).
 func MissingNodes(p Plugin, pools []string) []string {
 	var out []string
 	for _, n := range p.Nodes {
 		if !slices.Contains(pools, n) {
 			out = append(out, n)
 		}
+	}
+	if len(out) > 0 && len(p.AltNodes) > 0 {
+		for _, n := range p.AltNodes {
+			if !slices.Contains(pools, n) {
+				return out
+			}
+		}
+		return nil
 	}
 	return out
 }
@@ -323,6 +334,11 @@ type Plugin struct {
 	// (Options.Pools) lack one. Choosing one with system makes the system
 	// group on a cluster the run creates (nodegroups.For).
 	Nodes []string
+	// AltNodes, when set, are pools that stand in for all of Nodes: a
+	// cluster with every one of them runs the plugin without Nodes
+	// (MissingNodes). OpenClaw runs its worker pool on gvisor, or on the AWS
+	// Nitro sandbox's isolated nodes (ate.dev/pool=isolated).
+	AltNodes []string
 	// AddsNodes: choosing it makes its Nodes' gvisor and microvm groups on a
 	// cluster the run creates, as their sandbox classes do (mode3 makes the
 	// microvm group even without the microvm class).

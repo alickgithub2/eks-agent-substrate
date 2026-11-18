@@ -1,0 +1,68 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# The OpenClaw worker pool on the AWS Nitro sandbox (the nitro class, plugin
+# mode3-iso): each worker Pod is an EKS Auto Mode isolated sandbox
+# (RuntimeClass isolated-sandbox) on a node of NodePool ate-isolated, and
+# runs the actors with gVisor inside its own guest kernel, as counter-iso in
+# ../../mode3iso/counter-iso.yaml does. The openclaw plugin (openclaw.go)
+# renders this file instead of workerpool.yaml when OPENCLAW_SANDBOX is
+# nitro, or when it is empty and the cluster has isolated nodes but no
+# gVisor ones.
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: openclaw
+  namespace: openclaw
+  labels:
+    workload: openclaw
+spec:
+  replicas: REPLACE_WITH_WORKER_REPLICAS
+  # The ateworker-gvisor of the release the cluster runs (the fork's, which
+  # mode3-iso installs), pinned by digest by the plugin.
+  workerImage: REPLACE_WITH_WORKER_IMAGE
+  sandboxClasses:
+    - name: gvisor
+  networkTransport:
+    runtimeClassName: isolated-sandbox
+  template:
+    # The guest is sized from the memory request. The worker keeps runtime
+    # assets, image layers and actor state on a tmpfs in it, so it gets the
+    # 2 GiB actor (actortemplate.yaml), room for its memory snapshot and the
+    # OpenClaw image layers, and the worker's own memory.
+    resources:
+      limits:
+        cpu: "2"
+        memory: 6Gi
+      requests:
+        cpu: 500m
+        memory: 6Gi
+    # The OpenClaw images are linux/amd64 only.
+    nodeSelector:
+      ate.dev/pool: isolated
+      kubernetes.io/arch: amd64
+    tolerations:
+      - key: ate.dev/sandboxClass
+        operator: Equal
+        value: isolated
+        effect: NoSchedule
+    # Every activation pushes the actor's image layers, runtime and state
+    # into the guest; with the sandbox's default network and disk throttles
+    # on, a resume can take longer than the request that wakes the actor.
+    annotations:
+      sandbox.amazonaws.com/ingress-bandwidth: disabled
+      sandbox.amazonaws.com/egress-bandwidth: disabled
+      sandbox.amazonaws.com/ingress-packets-per-second: disabled
+      sandbox.amazonaws.com/egress-packets-per-second: disabled
+      sandbox.amazonaws.com/overlay-disk-bandwidth: disabled
+      sandbox.amazonaws.com/overlay-disk-iops: disabled

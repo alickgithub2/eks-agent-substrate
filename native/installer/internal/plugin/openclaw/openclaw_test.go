@@ -83,7 +83,7 @@ func TestImageMustBePinned(t *testing.T) {
 
 func TestRenderAll(t *testing.T) {
 	wa, _ := whatsappFor("")
-	m, err := renderAll(testImages(), "tok-0123456789abcdef", "3", wa)
+	m, err := renderAll(testImages(), "tok-0123456789abcdef", "3", wa, SandboxGVisor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestRenderAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err = renderAll(testImages(), "tok-0123456789abcdef", "3", wa)
+	m, err = renderAll(testImages(), "tok-0123456789abcdef", "3", wa, SandboxGVisor)
 	if err != nil || !strings.Contains(string(m.gatewayConfig), `"id":"+15555550100"`) || !strings.Contains(string(m.gateway), `value: "true"`) {
 		t.Errorf("WhatsApp: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestGatewayAuthTokenIsTheEnvSecretRef(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		m, err := renderAll(testImages(), tok, "3", wa)
+		m, err := renderAll(testImages(), tok, "3", wa, SandboxGVisor)
 		if err != nil {
 			t.Fatal(err)
 		}

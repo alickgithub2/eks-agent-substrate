@@ -27,6 +27,8 @@ import (
 
 	"github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin"
 	"github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/efs"
+	"github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/mode3"
+	"github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/mode3iso"
 )
 
 // Names of the demo (always-on-agent's manifests/eks).
@@ -86,6 +88,8 @@ var (
 	gatewayConfigYAML string
 	//go:embed manifests/workerpool.yaml
 	workerPoolYAML string
+	//go:embed manifests/workerpool-iso.yaml
+	workerPoolIsoYAML string
 	//go:embed manifests/actortemplate.yaml
 	actorTemplateYAML string
 	//go:embed manifests/egress-policy.json
@@ -130,6 +134,8 @@ func init() {
 		Requires: []string{efs.ID},
 		Needs:    plugin.Needs{IngressIDs: []string{GatewayID, DashboardID}},
 		Nodes:    []string{"gvisor"}, // its worker pool
+		// Or the AWS Nitro sandbox's isolated nodes (OPENCLAW_SANDBOX).
+		AltNodes: []string{"isolated"},
 		Check:    check,
 		Deploy:   deploy,
 		Verify:   verify,
@@ -217,10 +223,46 @@ func check(lookup func(string) (string, bool)) error {
 	if _, err := workerReplicas(workers); err != nil {
 		refused = append(refused, err.Error())
 	}
+	sb, _ := lookup("OPENCLAW_SANDBOX")
+	if _, err := sandboxFor(sb, nil); err != nil {
+		refused = append(refused, err.Error())
+	}
 	if len(refused) > 0 {
 		return errors.New(strings.Join(refused, "; "))
 	}
 	return nil
+}
+
+// The sandboxes the worker pool can run on (OPENCLAW_SANDBOX).
+const (
+	SandboxGVisor = "gvisor"
+	SandboxNitro  = "nitro"
+)
+
+// sandboxFor is OPENCLAW_SANDBOX: gvisor (workerpool.yaml, the gvisor node
+// group) or nitro (workerpool-iso.yaml, the AWS Nitro sandbox's isolated
+// nodes). Empty picks gvisor when the cluster has gVisor nodes, else nitro
+// when it has isolated ones, else gvisor (whose missing nodes
+// prerequisites names). pools are the cluster's ate.dev/pool values.
+func sandboxFor(v string, pools []string) (string, error) {
+	switch v {
+	case SandboxGVisor, SandboxNitro:
+		return v, nil
+	case "":
+		if !slices.Contains(pools, "gvisor") && slices.Contains(pools, "isolated") {
+			return SandboxNitro, nil
+		}
+		return SandboxGVisor, nil
+	}
+	return "", fmt.Errorf("OPENCLAW_SANDBOX must be %s, %s or empty", SandboxGVisor, SandboxNitro)
+}
+
+// poolOf is the ate.dev/pool value of the nodes sandbox runs its workers on.
+func poolOf(sandbox string) string {
+	if sandbox == SandboxNitro {
+		return "isolated"
+	}
+	return "gvisor"
 }
 
 // workerReplicas is OPENCLAW_WORKERS, the gVisor worker pool's size: 3 when
@@ -291,13 +333,17 @@ type rendered struct {
 
 var workerImageLine = regexp.MustCompile(`(?m)^(  workerImage: ).*$`)
 
-func renderAll(im images, token, replicas string, wa whatsapp) (rendered, error) {
+func renderAll(im images, token, replicas string, wa whatsapp, sandbox string) (rendered, error) {
 	var r rendered
 	egress, err := compactJSON(egressPolicyJSON)
 	if err != nil {
 		return r, fmt.Errorf("egress-policy.json: %w", err)
 	}
-	pool := workerImageLine.ReplaceAllLiteralString(workerPoolYAML, "  workerImage: "+im.worker)
+	poolYAML := workerPoolYAML
+	if sandbox == SandboxNitro {
+		poolYAML = workerPoolIsoYAML
+	}
+	pool := workerImageLine.ReplaceAllLiteralString(poolYAML, "  workerImage: "+im.worker)
 	if r.workerPool, err = render(pool, strings.NewReplacer("REPLACE_WITH_WORKER_REPLICAS", replicas)); err != nil {
 		return r, err
 	}
@@ -369,15 +415,24 @@ func gatewayToken(ctx context.Context, o plugin.Options) (string, error) {
 
 // prerequisites warns, as deploy-demo.sh does, about what the demo will
 // lack; a missing control plane stops it.
-func prerequisites(ctx context.Context, w io.Writer, o plugin.Options) error {
+func prerequisites(ctx context.Context, w io.Writer, o plugin.Options, sandbox string) error {
 	if _, err := efs.Out(ctx, o, "-n", "ate-system", "get", "deployment", "ate-api-server", "-o", "name"); err != nil {
 		return fmt.Errorf("ate-api-server not found in ate-system: install the control plane first")
 	}
 	if s, _ := efs.Out(ctx, o, "-n", "llm-gateway", "get", "service", "llm-gateway", "--ignore-not-found", "-o", "name"); strings.TrimSpace(s) == "" {
 		fmt.Fprintln(w, "WARNING: service llm-gateway/llm-gateway not found; the actors have no model until the LLM gateway is deployed")
 	}
-	if n, _ := efs.Out(ctx, o, "get", "nodes", "-l", "ate.dev/pool=gvisor", "-o", "name"); strings.TrimSpace(n) == "" {
-		fmt.Fprintln(w, "WARNING: no nodes labeled ate.dev/pool=gvisor; the worker pods will stay Pending")
+	pool := poolOf(sandbox)
+	if n, _ := efs.Out(ctx, o, "get", "nodes", "-l", "ate.dev/pool="+pool, "-o", "name"); strings.TrimSpace(n) == "" {
+		if sandbox == SandboxNitro {
+			// Auto Mode launches isolated nodes for the worker Pods, so none
+			// may be there yet; the NodePool must be.
+			if np, _ := efs.Out(ctx, o, "get", "nodepool", "ate-isolated", "--ignore-not-found", "-o", "name"); strings.TrimSpace(np) == "" {
+				return fmt.Errorf("OPENCLAW_SANDBOX=nitro needs NodePool ate-isolated: install the nitro sandbox class (plugin mode3-iso) first")
+			}
+		} else {
+			fmt.Fprintln(w, "WARNING: no nodes labeled ate.dev/pool=gvisor; the worker pods will stay Pending")
+		}
 	}
 	return nil
 }
@@ -387,7 +442,11 @@ func deploy(ctx context.Context, w io.Writer, o plugin.Options) error {
 	if err != nil {
 		return err
 	}
-	if err := prerequisites(ctx, w, o); err != nil {
+	sandbox, err := sandboxFor(os.Getenv("OPENCLAW_SANDBOX"), o.Pools)
+	if err != nil {
+		return err
+	}
+	if err := prerequisites(ctx, w, o, sandbox); err != nil {
 		return err
 	}
 	if im, err = withWorker(ctx, o, im); err != nil {
@@ -408,7 +467,7 @@ func deploy(ctx context.Context, w io.Writer, o plugin.Options) error {
 	if err != nil {
 		return err
 	}
-	m, err := renderAll(im, tok, replicas, wa)
+	m, err := renderAll(im, tok, replicas, wa, sandbox)
 	if err != nil {
 		return err
 	}
@@ -429,7 +488,11 @@ func deploy(ctx context.Context, w io.Writer, o plugin.Options) error {
 		return err
 	}
 
-	fmt.Fprintf(w, "WorkerPool %s (%s gVisor workers, %s)\n", Pool, replicas, im.worker)
+	kind := "gVisor workers"
+	if sandbox == SandboxNitro {
+		kind = "workers in AWS Nitro sandboxes (RuntimeClass isolated-sandbox)"
+	}
+	fmt.Fprintf(w, "WorkerPool %s (%s %s, %s)\n", Pool, replicas, kind, im.worker)
 	if err := efs.Apply(ctx, w, o, m.workerPool); err != nil {
 		return err
 	}
@@ -955,6 +1018,14 @@ func verify(ctx context.Context, w io.Writer, o plugin.Options) error {
 		}
 	}
 	fmt.Fprintln(w, "PASS: the gateway and dashboard run the pinned images")
+	if sandbox, err := sandboxFor(os.Getenv("OPENCLAW_SANDBOX"), o.Pools); err != nil {
+		return err
+	} else if sandbox == SandboxNitro {
+		if err := isolatedWorkers(ctx, w, o); err != nil {
+			return err
+		}
+		fmt.Fprintln(w, "PASS: every worker Pod of pool "+Pool+" runs under RuntimeClass isolated-sandbox on an isolated node")
+	}
 	ap, err := gatewayAccessPoint(ctx, o)
 	if err != nil {
 		return err
@@ -995,6 +1066,27 @@ func verify(ctx context.Context, w io.Writer, o plugin.Options) error {
 		return fmt.Errorf("the gateway could not reach actor %s through atenet-router (check --ingress-allowed-spiffe-ids): %w", Actor, last)
 	}
 	fmt.Fprintln(w, "PASS: the gateway reached actor "+Actor+" over router mTLS with its pod certificate")
+	return nil
+}
+
+// isolatedWorkers fails unless pool Pool has network-transport worker Pods
+// and every one runs under RuntimeClass isolated-sandbox on a node of
+// NodePool ate-isolated (mode3.CheckWorkers, as counter-iso is checked).
+func isolatedWorkers(ctx context.Context, w io.Writer, o plugin.Options) error {
+	pods, err := efs.Out(ctx, o, "-n", Namespace, "get", "pods", "-l", "ate.dev/worker-transport=network", "-o", "json")
+	if err != nil {
+		return err
+	}
+	nodes, err := efs.Out(ctx, o, "get", "nodes", "-o", "json")
+	if err != nil {
+		return err
+	}
+	table, err := mode3.CheckWorkers([]byte(pods), []byte(nodes), mode3iso.RuntimeClass,
+		map[string]string{mode3iso.PoolLabel: mode3iso.PoolValue})
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(w, table)
 	return nil
 }
 
