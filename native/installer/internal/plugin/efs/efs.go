@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -69,8 +70,10 @@ func init() {
 		Order:    30,
 		Minutes:  15,
 		SetupAWS: true,
-		// Its templates and Verify's actors are the counter demo's.
-		NeedsDemo: true,
+		// Its templates and Verify's actors are the counter demo's when the
+		// cluster has one; without (the AWS Nitro sandbox class alone) it
+		// serves OpenClaw's gateway state only.
+		NeedsDemo: false,
 		Nodes:     []string{"system"}, // Substrate's EFS CSI controller is pinned there
 		Needs:     plugin.Needs{Preview: []string{"ExternalVolumes"}},
 		// EFS bills stored data and throughput, not hours: a few test
@@ -138,7 +141,12 @@ func deploy(ctx context.Context, w io.Writer, o plugin.Options) error {
 	if err != nil {
 		return err
 	}
-	return CreateTemplates(ctx, w, k, Template, StorageClass)
+	err = CreateTemplates(ctx, w, k, Template, StorageClass)
+	if errors.Is(err, ErrNoDemo) {
+		fmt.Fprintf(w, "No counter demo on this cluster (it runs on the gvisor and microvm classes): StorageClass %s is ready, with no %s template\n", StorageClass, Template)
+		return nil
+	}
+	return err
 }
 
 // EFSStorage is the efs check's Storage: access points listed by EFS.
@@ -166,10 +174,24 @@ func verify(ctx context.Context, w io.Writer, o plugin.Options) error {
 		return err
 	}
 	s := EFSStorage(o)
+	ran := 0
 	for _, c := range Classes {
+		if out, _ := Out(ctx, o, "get", "namespace", c.Atespace, "--ignore-not-found", "-o", "name"); strings.TrimSpace(out) == "" {
+			fmt.Fprintf(w, "No counter demo on %s (namespace %s); skipping its round trip\n", c.Name, c.Atespace)
+			continue
+		}
+		ran++
 		if err := RoundTrip(ctx, w, o, k, s, c, c.Name == "gvisor"); err != nil {
 			return fmt.Errorf("%s: %w", c.Name, err)
 		}
+	}
+	if ran == 0 {
+		// No counter demo (the AWS Nitro sandbox class alone): check what
+		// Deploy made for OpenClaw's gateway, the StorageClass.
+		if out, err := Out(ctx, o, "get", "storageclass", StorageClass, "-o", "jsonpath={.parameters.fileSystemId}"); err != nil || strings.TrimSpace(out) == "" {
+			return fmt.Errorf("StorageClass %s has no EFS file system: deploy the efs plugin again", StorageClass)
+		}
+		fmt.Fprintf(w, "PASS: StorageClass %s is on the EFS file system (no counter demo to round-trip)\n", StorageClass)
 	}
 	return nil
 }

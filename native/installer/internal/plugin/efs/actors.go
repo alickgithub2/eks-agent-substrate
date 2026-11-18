@@ -8,6 +8,7 @@ package efs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -114,10 +115,15 @@ func CreateTemplates(ctx context.Context, w io.Writer, k Ate, name, sc string) e
 		made++
 	}
 	if made == 0 {
-		return fmt.Errorf("no counter demo to add %s to: deploy it first (--deploy-demo)", name)
+		return fmt.Errorf("%w: no counter demo to add %s to: deploy it first (--deploy-demo)", ErrNoDemo, name)
 	}
 	return nil
 }
+
+// ErrNoDemo is CreateTemplates' error on a cluster with no counter demo (its
+// classes are gVisor and microVM; the AWS Nitro sandbox class alone has
+// none). The EFS plugin then still serves OpenClaw's gateway state.
+var ErrNoDemo = errors.New("no counter demo")
 
 // DeleteTemplates deletes template name and its actors in every counter
 // atespace; deleting an actor deletes its volume, and with it its access

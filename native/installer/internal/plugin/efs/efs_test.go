@@ -286,12 +286,18 @@ func TestDeploy(t *testing.T) {
 	}
 }
 
-// Deploy stops when the counter demo is not there to add counter-efs to.
-func TestDeployNeedsTheCounterDemo(t *testing.T) {
+// Without the counter demo (the AWS Nitro sandbox class alone), Deploy makes
+// the StorageClass and skips counter-efs instead of stopping: OpenClaw's
+// gateway state still needs the file system.
+func TestDeployWithoutTheCounterDemo(t *testing.T) {
 	f := &fakeKube{answers: deployAnswers(), fail: map[string]bool{KubectlAtePath("v1.0.0") + " get actor-template": true}}
 	o := install(t, f)
-	if err := deploy(context.Background(), io.Discard, o); err == nil || !strings.Contains(err.Error(), "deploy it first (--deploy-demo)") {
-		t.Fatalf("want the counter demo prerequisite, got %v", err)
+	var out strings.Builder
+	if err := deploy(context.Background(), &out, o); err != nil {
+		t.Fatalf("deploy without the counter demo: %v", err)
+	}
+	if !strings.Contains(out.String(), "No counter demo on this cluster") {
+		t.Errorf("deploy did not say it skipped counter-efs:\n%s", out.String())
 	}
 }
 
