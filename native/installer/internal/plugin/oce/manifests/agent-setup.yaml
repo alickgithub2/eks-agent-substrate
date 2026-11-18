@@ -83,7 +83,13 @@ spec:
               for (let i = 0; i < 90; i++) { const n = await call("GET", "/namespaces/" + ns.id); if (n.status === "ready") break; if (n.status === "failed") throw new Error("Namespace failed"); await sleep(5000); }
               console.log("namespace", ns.id, "ready");
               const values = {
-                gateway: { mode: "local", bind: "lan", http: { endpoints: { chatCompletions: { enabled: true } } } },
+                // auth.password, the Driver-managed gateway password as an
+                // environment SecretRef: OCE then projects it as
+                // OPENCLAW_GATEWAY_PASSWORD, for direct loopback access
+                // (kubectl port-forward) to the HTTP chat API next to its
+                // trusted-proxy authentication.
+                gateway: { mode: "local", bind: "lan", auth: { password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" } },
+                  http: { endpoints: { chatCompletions: { enabled: true } } } },
                 plugins: {
                   load: { paths: ["/opt/oce-substrate/oce-bridge"] },
                   allow: ["oce-substrate-bridge"],

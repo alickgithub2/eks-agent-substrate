@@ -9,6 +9,7 @@ import (
 	_ "github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/llmgateway"
 	_ "github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/mode3"
 	_ "github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/mode3iso"
+	_ "github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/oce"
 	_ "github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/openclaw"
 	_ "github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/s3files"
 )

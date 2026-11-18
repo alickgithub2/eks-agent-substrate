@@ -53,6 +53,20 @@ const (
 //go:embed bridge
 var bridgeFS embed.FS
 
+// walkBridge calls f with each embedded bridge file's path and bytes.
+func walkBridge(f func(name string, b []byte)) error {
+	return fs.WalkDir(bridgeFS, "bridge", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := bridgeFS.ReadFile(p)
+		if err == nil {
+			f(p, b)
+		}
+		return err
+	})
+}
+
 // addBridge writes the embedded bridge plugin under BridgeDir, owned by
 // 1000:1000, and returns the number of files written.
 func addBridge(tw *tar.Writer, epoch time.Time) (int, error) {

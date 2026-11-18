@@ -13,9 +13,9 @@
 # limitations under the License.
 # Helm values for OCE's chart (deploy/helm/openclaw-enterprise at
 # ChartRevision), reached by kubectl port-forward only: no gateway routing
-# (Envoy Gateway), no native admin, no TLS or DNS. The oce plugin fills the
-# REPLACE_WITH_ values: the controller image by digest, the database's and
-# the Kubernetes API's /32s, which the chart's NetworkPolicies allow.
+# (Envoy Gateway), no native admin, no TLS or DNS. The oce plugin fills in
+# the controller image by digest and the database's and the Kubernetes API's
+# /32s, which the chart's NetworkPolicies allow.
 images:
   controller: REPLACE_WITH_CONTROLLER_IMAGE
 auth:
