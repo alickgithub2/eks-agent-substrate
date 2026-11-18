@@ -587,11 +587,26 @@ func (r *clusterRun) checkQuotas(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("count Elastic IP addresses: %w", err)
 		}
-		if err := r.headroom(ctx, "ec2", quotaEIPs, "Elastic IP addresses", len(out.Addresses)); err != nil {
+		if err := r.headroom(ctx, "ec2", quotaEIPs, "Elastic IP addresses", quotaEIPsUsed(out.Addresses)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// quotaEIPsUsed counts the addresses quota L-0263D0A3 counts: not the ones
+// an AWS service allocates and manages for its own resources (an
+// Application Load Balancer's, a regional NAT gateway's), which carry
+// ServiceManaged. An account can hold more addresses than the quota allows
+// only through those, so counting them refuses accounts that have room.
+func quotaEIPsUsed(addrs []ec2types.Address) int {
+	n := 0
+	for _, a := range addrs {
+		if a.ServiceManaged == "" {
+			n++
+		}
+	}
+	return n
 }
 
 // headroom fails unless one more of a quota's resource fits.
