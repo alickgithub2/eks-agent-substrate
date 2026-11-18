@@ -1,0 +1,139 @@
+# Proposed fix for csantanapr/substrate (microvm-mode-3-mixed, 9f36a0d): a network
+# worker's staging extractor restores image layer owners. Not applied by the
+# installer (the worker image is prebuilt); see README, Known limits.
+diff --git a/internal/workerstaging/archive.go b/internal/workerstaging/archive.go
+index c341e9a0..a10c22cb 100644
+--- a/internal/workerstaging/archive.go
++++ b/internal/workerstaging/archive.go
+@@ -35,6 +35,7 @@ import (
+ 	"go.ate.dev/substrate/internal/nodepath"
+ 	pb "go.ate.dev/substrate/internal/proto/workerstagingpb"
+ 	"go.ate.dev/substrate/internal/resources"
++	"go.ate.dev/substrate/internal/tarutil"
+ )
+ 
+ const (
+@@ -388,6 +389,13 @@ func extractArtifact(ctx context.Context, artifact *pb.Artifact, directory strin
+ 			return err
+ 		}
+ 		mode := header.FileInfo().Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
++		// An image layer's entries keep the numeric owner their tar headers
++		// record, as the node-local unpack (internal/imagecache) and
++		// containerd apply it: an image that gives its home or data directory
++		// to a non-root user (mode 0700, 1000:1000) must not land root-owned
++		// in a network worker's guest, where that user then cannot open it.
++		// Runtime assets and actor state keep the extracting user.
++		owned := artifact.GetKind() == pb.ArtifactKind_ARTIFACT_KIND_IMAGE_LAYER && strings.HasPrefix(name, "fs/")
+ 		switch header.Typeflag {
+ 		case tar.TypeDir:
+ 			// os.Root's mkdir takes permission bits only; the setuid, setgid
+@@ -396,6 +404,11 @@ func extractArtifact(ctx context.Context, artifact *pb.Artifact, directory strin
+ 			if err := root.MkdirAll(name, mode&os.ModePerm|0o700); err != nil {
+ 				return err
+ 			}
++			if owned {
++				if err := tarutil.Lchown(root, name, header); err != nil {
++					return err
++				}
++			}
+ 			dirs[name] = mode
+ 		case tar.TypeReg:
+ 			file, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+@@ -403,6 +416,11 @@ func extractArtifact(ctx context.Context, artifact *pb.Artifact, directory strin
+ 				return err
+ 			}
+ 			_, copyErr := io.CopyN(file, reader, header.Size)
++			// The owner first: a chown clears setuid and setgid, which the
++			// Chmod then restores.
++			if copyErr == nil && owned {
++				copyErr = tarutil.Lchown(root, name, header)
++			}
+ 			if copyErr == nil {
+ 				copyErr = file.Chmod(mode)
+ 			}
+@@ -420,6 +438,11 @@ func extractArtifact(ctx context.Context, artifact *pb.Artifact, directory strin
+ 			if err := root.Symlink(header.Linkname, name); err != nil {
+ 				return err
+ 			}
++			if owned {
++				if err := tarutil.Lchown(root, name, header); err != nil {
++					return err
++				}
++			}
+ 		case tar.TypeLink:
+ 			if !archivePath(artifact, header.Linkname) || !seen[header.Linkname] {
+ 				return fmt.Errorf("invalid hardlink target")
+diff --git a/internal/workerstaging/owner_test.go b/internal/workerstaging/owner_test.go
+new file mode 100644
+index 00000000..f2797404
+--- /dev/null
++++ b/internal/workerstaging/owner_test.go
+@@ -0,0 +1,68 @@
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     https://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package workerstaging
++
++import (
++	"archive/tar"
++	"bytes"
++	"os"
++	"path/filepath"
++	"syscall"
++	"testing"
++
++	pb "go.ate.dev/substrate/internal/proto/workerstagingpb"
++)
++
++// An image layer's entries keep their tar owner, so an image's private
++// home directory (0700, owned by its non-root user) stays its user's in a
++// network worker's guest. Unprivileged, the test can give files only to its
++// own uid and groups it belongs to: it uses a supplementary group, which
++// extraction without owners would leave as the primary one.
++func TestImageLayerKeepsTarOwner(t *testing.T) {
++	uid, gid := os.Getuid(), os.Getgid()
++	other := -1
++	groups, _ := os.Getgroups()
++	for _, g := range groups {
++		if g != gid {
++			other = g
++			break
++		}
++	}
++	if other < 0 {
++		t.Skip("the test user has no supplementary group to give files to")
++	}
++	data := archiveFixture(t, []*tar.Header{
++		{Name: "fs/", Typeflag: tar.TypeDir, Mode: 0o755, Uid: uid, Gid: gid},
++		{Name: "fs/home/", Typeflag: tar.TypeDir, Mode: 0o700, Uid: uid, Gid: other},
++		{Name: "fs/home/state", Typeflag: tar.TypeReg, Mode: 0o600, Size: 3, Uid: uid, Gid: other},
++	})
++	dir := t.TempDir()
++	if err := extractArtifact(t.Context(), &pb.Artifact{Kind: pb.ArtifactKind_ARTIFACT_KIND_IMAGE_LAYER}, dir, bytes.NewReader(data)); err != nil {
++		t.Fatal(err)
++	}
++	for name, mode := range map[string]os.FileMode{"fs/home": 0o700, "fs/home/state": 0o600} {
++		info, err := os.Lstat(filepath.Join(dir, name))
++		if err != nil {
++			t.Fatal(err)
++		}
++		st := info.Sys().(*syscall.Stat_t)
++		if int(st.Gid) != other || int(st.Uid) != uid {
++			t.Errorf("%s is %d:%d, want %d:%d from its tar header", name, st.Uid, st.Gid, uid, other)
++		}
++		if info.Mode().Perm() != mode {
++			t.Errorf("%s has mode %v, want %v", name, info.Mode().Perm(), mode)
++		}
++	}
++}

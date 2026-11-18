@@ -645,7 +645,12 @@ the EKS API endpoint limited to your own ranges (`EKS_PUBLIC_ACCESS_CIDRS`).
   1000:1000, while a directory it makes on the sandbox's `/tmp` is its own.
   Any image with a non-root user and private directories is affected; the
   counter demo is not. Until the extractor applies owners, run OpenClaw on
-  the gvisor node group (`OPENCLAW_SANDBOX=gvisor`, the default).
+  the gvisor node group (`OPENCLAW_SANDBOX=gvisor`, the default). The fix,
+  with a test that fails without it, is
+  [`patches/upstream/substrate-workerstaging-layer-owner.patch`](patches/upstream/substrate-workerstaging-layer-owner.patch):
+  apply each layer entry's tar owner with `tarutil.Lchown`, as the
+  node-local unpack does. It needs a Substrate release with new worker
+  images.
 
 - Resource names derive from `CLUSTER_NAME` and the Region. Global names (S3
   buckets, IAM roles) also carry the Region, and the installer only reuses or
