@@ -10,6 +10,7 @@ import (
 	"github.com/csantanapr/eks-agent-substrate/native/installer/internal/eksoverlay"
 	"github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin"
 	"github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/dbrotation"
+	"github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/efs"
 	"github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/llmgateway"
 	"github.com/csantanapr/eks-agent-substrate/native/installer/internal/plugin/mode3"
 	"github.com/csantanapr/eks-agent-substrate/native/installer/internal/state"
@@ -140,8 +141,9 @@ func TestCreatePrivateLogFile(t *testing.T) {
 // Mode with the nitro class alone gets a node group: only for a plugin that
 // adds one, mode3's microvm or system for a plugin that runs on it (the LLM
 // gateway); none without one. The rule, with the real plugins, agrees.
-// There the wizard offers only two of the plugins on system: the LLM
-// gateway, and login rotation with RDS (the class help names those). So the
+// There the wizard offers three of the plugins on system: the LLM gateway,
+// EFS (for OpenClaw's gateway state; it needs no counter demo), and login
+// rotation with RDS (the class help names those). So the
 // READMEs' row for a plugin on system says it makes the group with whatever
 // classes and database it is offered with (review of 1ca284d, NIT-1).
 func TestSandboxClassesCommentSaysWhenAPluginAddsANodeGroup(t *testing.T) {
@@ -153,7 +155,7 @@ func TestSandboxClassesCommentSaysWhenAPluginAddsANodeGroup(t *testing.T) {
 			t.Errorf("Auto Mode, bundled, nitro, %v: %v, want %v", c.plugins, got, c.want)
 		}
 	}
-	for db, want := range map[string][]string{state.DatabaseBundled: {llmgateway.ID}, state.DatabaseRDS: {llmgateway.ID, dbrotation.ID}} {
+	for db, want := range map[string][]string{state.DatabaseBundled: {llmgateway.ID, efs.ID}, state.DatabaseRDS: {llmgateway.ID, efs.ID, dbrotation.ID}} {
 		s := &state.Setup{ClusterName: "fresh", ClusterIsNew: true, AutoMode: true, SandboxClasses: state.ClassNitro, Database: db}
 		var offered []string
 		for _, p := range plugin.All() {

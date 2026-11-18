@@ -91,7 +91,7 @@ const classesHelp = " The classes decide a new cluster's node groups: gVisor and
 	"The system group comes without Auto Mode, with either of them and RDS (the control plane is pinned there), " +
 	"and with a plugin that runs on it. With neither class, an Auto Mode cluster gets a node group only from a plugin: " +
 	"mode 3 adds the microvm group (and with RDS the system group), and a plugin that runs on the system group " +
-	"(the LLM gateway, or login rotation with RDS) adds that one. Without such a plugin it gets none: " +
+	"(the LLM gateway, EFS, or login rotation with RDS) adds that one. Without such a plugin it gets none: " +
 	"the control plane, the bundled PostgreSQL and every controller run on Auto Mode nodes. Press m for that minimal profile."
 
 // help is a setting's explanation when config.env has no comment above it.

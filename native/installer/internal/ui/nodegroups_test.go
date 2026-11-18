@@ -326,7 +326,7 @@ func TestClassHelpSaysWhenAPluginAddsANodeGroup(t *testing.T) {
 		for _, want := range []string{
 			"With neither class, an Auto Mode cluster gets a node group only from a plugin",
 			"mode 3 adds the microvm group (and with RDS the system group)",
-			"a plugin that runs on the system group (the LLM gateway, or login rotation with RDS) adds that one.",
+			"a plugin that runs on the system group (the LLM gateway, EFS, or login rotation with RDS) adds that one.",
 			"Without such a plugin it gets none",
 		} {
 			if !strings.Contains(help[c], want) {
