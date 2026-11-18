@@ -1,0 +1,64 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# Per OCE tenant namespace (REPLACE_WITH_TENANT): the egress an Agent gateway
+# needs to run its conversations on Substrate, which OCE's default-deny
+# policies do not allow (they allow DNS and public HTTPS only): ate-api-server
+# (kubectl-ate), atenet-router's mTLS listener (the turns) and the LLM gateway
+# (OCE's startup model probe). And the LLM gateway's ingress from those Pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: oce-substrate-egress
+  namespace: REPLACE_WITH_TENANT
+spec:
+  podSelector:
+    matchLabels:
+      openclaw.dev/workload-role: gateway
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ate-system }
+          podSelector:
+            matchLabels: { app: ate-api-server }
+      ports: [{ port: 443, protocol: TCP }]
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ate-system }
+          podSelector:
+            matchLabels: { app: atenet-router }
+      ports: [{ port: 8443, protocol: TCP }]
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: llm-gateway }
+          podSelector:
+            matchLabels: { app: llm-gateway }
+      ports: [{ port: 4000, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: llm-gateway-from-oce-REPLACE_WITH_TENANT
+  namespace: llm-gateway
+spec:
+  podSelector:
+    matchLabels: { app: llm-gateway }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: REPLACE_WITH_TENANT }
+          podSelector:
+            matchLabels: { openclaw.dev/workload-role: gateway }
+      ports: [{ port: 4000, protocol: TCP }]

@@ -1,0 +1,11 @@
+{
+  "name": "@oce/substrate-bridge",
+  "version": "0.1.0",
+  "description": "Answer every OpenClaw Enterprise Agent turn from the conversation's Agent Substrate actor.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "openclaw": {
+    "extensions": ["./dist/index.js"]
+  }
+}

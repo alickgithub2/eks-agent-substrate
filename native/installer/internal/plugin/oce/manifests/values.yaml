@@ -1,0 +1,57 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# Helm values for OCE's chart (deploy/helm/openclaw-enterprise at
+# ChartRevision), reached by kubectl port-forward only: no gateway routing
+# (Envoy Gateway), no native admin, no TLS or DNS. The oce plugin fills the
+# REPLACE_WITH_ values: the controller image by digest, the database's and
+# the Kubernetes API's /32s, which the chart's NetworkPolicies allow.
+images:
+  controller: REPLACE_WITH_CONTROLLER_IMAGE
+auth:
+  baseUrl: http://127.0.0.1:8080
+  secretName: occ-auth
+agentNativeAdmin:
+  enabled: false
+gatewayRouting:
+  enabled: false
+bootstrap:
+  adminEmail: admin@oce.local
+  password:
+    claimName: occ-bootstrap
+database:
+  secretName: occ-database
+  cidrs: [REPLACE_WITH_DATABASE_CIDRS]
+  port: 5432
+cluster:
+  cidrs: [REPLACE_WITH_CLUSTER_CIDRS]
+  port: 443
+api:
+  port: 8080
+  clients:
+    - namespace: openclaw-system
+      podLabels:
+        app: occ-relay
+dns:
+  namespace: kube-system
+  podLabels:
+    k8s-app: kube-dns
+# One block for the migration and bootstrap Job, the API and the worker: the
+# chart's 500m default CPU limit stalls the migration (issue #133).
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi

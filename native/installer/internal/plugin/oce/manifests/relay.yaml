@@ -1,0 +1,67 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# The OCC API listens on its pod IP only (OCC_HOST), so kubectl port-forward,
+# which connects to localhost inside the pod, cannot reach it. This relay, in
+# the chart's api.clients and gatewayClients (labels app: occ-relay), listens
+# on 0.0.0.0:8080 and copies each connection to the API Service; reach it
+# with
+#     kubectl -n openclaw-system port-forward deploy/occ-relay 8080:8080
+# It runs the pinned controller image's node, so it adds no image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: occ-relay
+  namespace: openclaw-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: occ-relay
+  template:
+    metadata:
+      labels:
+        app: occ-relay
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: REPLACE_WITH_CONTROLLER_IMAGE
+          command: ["node", "-e"]
+          args:
+            - |
+              const net = require("net");
+              const [host, port] = [process.env.TARGET_HOST, Number(process.env.TARGET_PORT)];
+              net.createServer((c) => {
+                const s = net.connect(port, host);
+                c.pipe(s).pipe(c);
+                const end = () => { c.destroy(); s.destroy(); };
+                c.on("error", end); s.on("error", end); c.on("close", end); s.on("close", end);
+              }).listen(8080, "0.0.0.0");
+          env:
+            - { name: TARGET_HOST, value: REPLACE_WITH_API_SERVICE }
+            - { name: TARGET_PORT, value: "8080" }
+          ports:
+            - containerPort: 8080
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

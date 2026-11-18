@@ -1,0 +1,116 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# OCE's PostgreSQL: one StatefulSet on an encrypted EBS volume, ClusterIP
+# only. OCE's chart bundles no database (aws-samples/sample-eks-nitro-sandbox
+# issue #133). The init script makes the two roles OCE requires, occ_migrator
+# and occ_app, with the hex passwords in Secret occ-postgres-roles, as
+# migrations/init-local.sql does at the chart's commit.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openclaw-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: occ-postgres-init
+  namespace: openclaw-system
+data:
+  10-occ-roles.sh: |
+    #!/bin/sh
+    set -eu
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname openclaw_enterprise <<SQL
+    CREATE ROLE occ_migrator LOGIN PASSWORD '$OCC_MIGRATOR_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+    CREATE ROLE occ_app LOGIN PASSWORD '$OCC_APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+    GRANT CREATE ON DATABASE openclaw_enterprise TO occ_migrator;
+    CREATE SCHEMA occ AUTHORIZATION occ_migrator;
+    CREATE SCHEMA drizzle AUTHORIZATION occ_migrator;
+    REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+    SQL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: occ-postgres
+  namespace: openclaw-system
+spec:
+  type: ClusterIP
+  selector:
+    app: occ-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: occ-postgres
+  namespace: openclaw-system
+spec:
+  serviceName: occ-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: occ-postgres
+  template:
+    metadata:
+      labels:
+        app: occ-postgres
+    spec:
+      securityContext:
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: public.ecr.aws/docker/library/postgres:17-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7
+          env:
+            - { name: POSTGRES_DB, value: openclaw_enterprise }
+            - { name: POSTGRES_USER, value: postgres }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: occ-postgres-roles, key: postgres } }
+            - name: OCC_MIGRATOR_PASSWORD
+              valueFrom: { secretKeyRef: { name: occ-postgres-roles, key: occ_migrator } }
+            - name: OCC_APP_PASSWORD
+              valueFrom: { secretKeyRef: { name: occ-postgres-roles, key: occ_app } }
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "openclaw_enterprise"]
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
+      volumes:
+        - name: init
+          configMap:
+            name: occ-postgres-init
+            defaultMode: 0555
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: REPLACE_WITH_STORAGE_CLASS
+        resources:
+          requests:
+            storage: 10Gi

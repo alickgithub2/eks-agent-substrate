@@ -1,0 +1,25 @@
+{
+  "id": "oce-substrate-bridge",
+  "name": "OCE on Agent Substrate",
+  "description": "Runs on an OpenClaw Enterprise Agent's gateway: answers each agent turn (HTTP chat included, which ACP bindings do not reach) from the conversation's Agent Substrate actor, created from a golden ActorTemplate on first use and suspended once idle. Reuses the substrate plugin's actor provisioner, router and idle suspender.",
+  "activation": { "onStartup": true },
+  "enabledByDefault": false,
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["atespace", "template", "actorToken", "kubectlAtePath", "ateTokenFile"],
+    "properties": {
+      "atespace": { "type": "string", "minLength": 1, "description": "atespace the per-conversation actors are created in" },
+      "template": { "type": "string", "minLength": 1, "description": "golden ActorTemplate, by bare name in the atespace" },
+      "actorDomain": { "type": "string", "description": "domain in the Host sent to atenet" },
+      "actorToken": { "type": "string", "minLength": 1, "description": "bearer token for the actors' /v1/chat/completions" },
+      "kubectlAtePath": { "type": "string", "minLength": 1 },
+      "ateapiAddress": { "type": "string" },
+      "ateTokenFile": { "type": "string", "minLength": 1, "description": "projected ServiceAccount token with audience api.ate-system.svc" },
+      "egressPolicy": { "type": "object", "description": "protojson EgressPolicy each new actor gets" },
+      "idleTimeoutSeconds": { "type": "number", "minimum": 1 },
+      "idlePollMs": { "type": "number", "minimum": 50 },
+      "substrateDist": { "type": "string", "description": "directory of the substrate plugin's compiled modules" }
+    }
+  }
+}

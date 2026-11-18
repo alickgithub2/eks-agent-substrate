@@ -1,0 +1,62 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# OCE's scripts/prepare-bootstrap-volume, as a manifest: bootstrap writes the
+# initial admin password and service key only into a private directory, so
+# the claim's root must be 1000:1000 and mode 0700 before the chart's
+# initialization Job runs (else BOOTSTRAP_OUTPUT_UNVERIFIED). The Pod runs
+# once and is deleted.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: occ-bootstrap
+  namespace: openclaw-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: REPLACE_WITH_STORAGE_CLASS
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: occ-bootstrap-prepare
+  namespace: openclaw-system
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  containers:
+    - name: prepare
+      image: REPLACE_WITH_CONTROLLER_IMAGE
+      command: ["node", "-e"]
+      args:
+        - |
+          const fs = require("fs");
+          const root = "/var/lib/openclaw/bootstrap";
+          for (const e of fs.readdirSync(root)) if (e !== "lost+found") throw new Error("not empty: " + e);
+          fs.chownSync(root, 1000, 1000);
+          fs.chmodSync(root, 0o700);
+          const s = fs.statSync(root);
+          if (s.uid !== 1000 || s.gid !== 1000 || (s.mode & 0o777) !== 0o700) throw new Error("not prepared");
+          console.log("prepared");
+      securityContext:
+        runAsUser: 0
+        allowPrivilegeEscalation: false
+        capabilities: { drop: ["ALL"], add: ["CHOWN", "FOWNER"] }
+      volumeMounts:
+        - { name: bootstrap, mountPath: /var/lib/openclaw/bootstrap }
+  volumes:
+    - name: bootstrap
+      persistentVolumeClaim:
+        claimName: occ-bootstrap

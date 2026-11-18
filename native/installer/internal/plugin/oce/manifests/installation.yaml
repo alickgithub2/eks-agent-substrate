@@ -1,0 +1,85 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# OCE's Installation startup configuration (Secret occ-installation-startup,
+# key installation.yaml): Kubernetes Compute, Secret and Configuration Drivers
+# in the cluster, native IAM. The runtime image is OCE's published runtime
+# plus the substrate plugin and kubectl-ate (image.go), by digest, so each
+# embedded Agent's gateway can run its conversations as Substrate actors.
+occ:
+  cluster: REPLACE_WITH_CLUSTER
+backend: []
+presets:
+  includeDefaults: true
+drivers:
+  configuration:
+    id: config-kubernetes
+    configuration:
+      authentication:
+        mode: inCluster
+  iam:
+    id: native-iam
+    configuration: {}
+  compute:
+    id: compute-kubernetes
+    configuration:
+      authentication:
+        mode: inCluster
+      images:
+        gateway: REPLACE_WITH_RUNTIME_IMAGE
+        agent: REPLACE_WITH_RUNTIME_IMAGE
+        requireImmutableDigest: true
+      resources:
+        gateway:
+          requests: { cpu: 100m, memory: 1536Mi }
+          limits: { cpu: "2", memory: 3Gi }
+        agent:
+          requests: { cpu: 100m, memory: 768Mi }
+          limits: { cpu: "2", memory: 3Gi }
+        namespace:
+          quota:
+            pods: "10"
+          containerDefaults:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "2", memory: 2Gi }
+      network:
+        dns:
+          namespace: kube-system
+          podLabels:
+            k8s-app: kube-dns
+        gatewayPort: 8080
+        # No proxy sits in front of the gateways (no gateway routing); one
+        # unused address keeps the list nonempty, as Compute requires.
+        gatewayTrustedProxyCidrs:
+          - 192.0.2.1/32
+        gatewayClients:
+          - namespace: openclaw-system
+            podLabels:
+              app: occ-relay
+      servicePrincipalCredentials:
+        mode: projectedServiceAccountToken
+        audience: openclaw-enterprise
+        expirationSeconds: 900
+      runtime:
+        gatewayStorageClassName: REPLACE_WITH_STORAGE_CLASS
+        nativeOpenClawSessionCapacity: 8
+        transportSecretPrefix: openclaw-agent-transport
+        # The runtime image (image.go) is linux/amd64 only; EKS Auto Mode's
+        # general-purpose nodes may be Graviton.
+        nodeSelector:
+          kubernetes.io/arch: amd64
+  secret:
+    id: secret-kubernetes
+    configuration:
+      authentication:
+        mode: inCluster
