@@ -560,6 +560,10 @@ const (
 // checkQuotas finds this deployment's VPC and NAT address from an earlier
 // run, and checks that the account has room for the ones still to create.
 func (r *clusterRun) checkQuotas(ctx context.Context) error {
+	// An existing VPC (VPC_ID) needs no new VPC, NAT gateway or address.
+	if r.e.cfg.VPCID != "" {
+		return nil
+	}
 	var err error
 	if r.vpcID, err = r.findVPC(ctx); err != nil {
 		return err

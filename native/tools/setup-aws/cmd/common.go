@@ -36,6 +36,10 @@ type Config struct {
 	Tags string
 	// ECRRepositories are the private repositories made for demo images.
 	ECRRepositories string
+	// VPCID, when set, is an existing VPC the cluster goes into (VPC_ID):
+	// its private subnets with a NAT route are used, and nothing in it is
+	// created, tagged or deleted.
+	VPCID string
 	// MinKubernetesMinor is the oldest EKS minor version accepted (1.MINOR).
 	MinKubernetesMinor int
 	// Plan reports what each step would do and changes nothing.

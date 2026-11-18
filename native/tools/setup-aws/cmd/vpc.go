@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -43,6 +44,9 @@ func subnetKind(public bool) string {
 }
 
 func (r *clusterRun) ensureNetwork(ctx context.Context) error {
+	if r.e.cfg.VPCID != "" {
+		return r.adoptExistingVPC(ctx, r.e.cfg.VPCID)
+	}
 	if r.cluster != nil {
 		return r.adoptClusterNetwork(ctx)
 	}
@@ -480,4 +484,101 @@ func (r *clusterRun) ensureRouteTable(ctx context.Context, public bool, target s
 		}
 	}
 	return nil
+}
+
+// adoptExistingVPC uses vpc, a VPC this deployment did not make (VPC_ID),
+// for the cluster: its private subnets, those whose route table sends
+// 0.0.0.0/0 to a NAT gateway, in two or more Availability Zones the cluster
+// can use. Nothing in the VPC is created, changed or tagged, so teardown,
+// which deletes only owner-tagged network resources, leaves it all.
+func (r *clusterRun) adoptExistingVPC(ctx context.Context, vpc string) error {
+	vpcs, err := r.c.EC2.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{VpcIds: []string{vpc}})
+	if err != nil {
+		return fmt.Errorf("describe VPC_ID %s: %w", vpc, err)
+	}
+	if len(vpcs.Vpcs) != 1 {
+		return fmt.Errorf("VPC_ID %s: no such VPC in %s", vpc, r.e.cfg.Region)
+	}
+	if o := ec2TagMap(vpcs.Vpcs[0].Tags)[OwnerTagKey]; o != "" && o != r.e.names.OwnerValue {
+		return fmt.Errorf("VPC_ID %s belongs to deployment %s", vpc, o)
+	}
+	subs, err := r.c.EC2.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{Filters: []ec2types.Filter{flt("vpc-id", vpc)}})
+	if err != nil {
+		return fmt.Errorf("describe the subnets of VPC_ID %s: %w", vpc, err)
+	}
+	rts, err := r.c.EC2.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{Filters: []ec2types.Filter{flt("vpc-id", vpc)}})
+	if err != nil {
+		return fmt.Errorf("describe the route tables of VPC_ID %s: %w", vpc, err)
+	}
+	private := privateSubnets(subs.Subnets, rts.RouteTables, r.azs)
+	zones := map[string]bool{}
+	for _, s := range private {
+		zones[aws.ToString(s.AvailabilityZone)] = true
+	}
+	if len(zones) < 2 {
+		return fmt.Errorf("VPC_ID %s has private subnets (default route to a NAT gateway) in %d usable Availability Zone(s); the cluster needs two or more", vpc, len(zones))
+	}
+	r.vpcID, r.private, r.public = vpc, nil, nil
+	for _, s := range private {
+		r.private = append(r.private, aws.ToString(s.SubnetId))
+	}
+	slog.Info("using the existing VPC (VPC_ID); nothing in it is created, changed or tagged", "vpc", vpc, "privateSubnets", strings.Join(r.private, ","))
+	return nil
+}
+
+// privateSubnets are the subnets whose route table (their own, else the
+// VPC's main one) sends 0.0.0.0/0 to a NAT gateway, in one of zones (all
+// zones when zones is empty), one per zone, the first by subnet ID.
+func privateSubnets(subnets []ec2types.Subnet, tables []ec2types.RouteTable, zones []string) []ec2types.Subnet {
+	viaNAT := func(t ec2types.RouteTable) bool {
+		for _, rt := range t.Routes {
+			if aws.ToString(rt.DestinationCidrBlock) == "0.0.0.0/0" && aws.ToString(rt.NatGatewayId) != "" {
+				return true
+			}
+		}
+		return false
+	}
+	explicit, main := map[string]bool{}, false
+	for _, t := range tables {
+		for _, a := range t.Associations {
+			if id := aws.ToString(a.SubnetId); id != "" {
+				explicit[id] = viaNAT(t)
+			} else if aws.ToBool(a.Main) {
+				main = viaNAT(t)
+			}
+		}
+	}
+	byZone := map[string]ec2types.Subnet{}
+	for _, s := range subnets {
+		id, az := aws.ToString(s.SubnetId), aws.ToString(s.AvailabilityZone)
+		nat, ok := explicit[id]
+		if !ok {
+			nat = main
+		}
+		if !nat || aws.ToBool(s.MapPublicIpOnLaunch) || (len(zones) > 0 && !slicesContains(zones, az)) {
+			continue
+		}
+		if have, ok := byZone[az]; !ok || id < aws.ToString(have.SubnetId) {
+			byZone[az] = s
+		}
+	}
+	var azs []string
+	for az := range byZone {
+		azs = append(azs, az)
+	}
+	sort.Strings(azs)
+	var out []ec2types.Subnet
+	for _, az := range azs {
+		out = append(out, byZone[az])
+	}
+	return out
+}
+
+func slicesContains(xs []string, x string) bool {
+	for _, y := range xs {
+		if y == x {
+			return true
+		}
+	}
+	return false
 }
