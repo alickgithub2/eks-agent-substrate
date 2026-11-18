@@ -45,6 +45,10 @@ spec:
           podSelector:
             matchLabels: { app: llm-gateway }
       ports: [{ port: 4000, protocol: TCP }]
+    # The Kubernetes API (kubectl-ate reads the servicedns ClusterTrustBundle).
+    - to:
+REPLACE_WITH_KUBE_API_BLOCKS
+      ports: [{ port: 443, protocol: TCP }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -62,3 +66,19 @@ spec:
           podSelector:
             matchLabels: { openclaw.dev/workload-role: gateway }
       ports: [{ port: 4000, protocol: TCP }]
+---
+# The tenant's Agent ServiceAccounts may read ClusterTrustBundles, as the
+# openclaw plugin's gateway may (ClusterRole openclaw-gateway-eks), and nothing
+# else in the Kubernetes API.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: oce-substrate-trust-bundles-REPLACE_WITH_TENANT
+subjects:
+  - kind: Group
+    name: system:serviceaccounts:REPLACE_WITH_TENANT
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: openclaw-gateway-eks
+  apiGroup: rbac.authorization.k8s.io

@@ -461,6 +461,42 @@ Auto Mode launches for it. It needs Auto Mode, no node group and no Kata.
 [`slides/demo.md`](slides/demo.md) has copy-paste commands for the actor
 demos on isolated sandboxes.
 
+## OpenClaw Enterprise on Agent Substrate (experimental)
+
+[OpenClaw Enterprise](https://github.com/openclaw/openclaw-enterprise) (OCE)
+deploys and governs OpenClaw Agents; with `native/installer/internal/plugin/oce`
+each OCE Agent's conversations run as Substrate actors: the Agent's gateway
+(OCE's embedded OpenClaw, in its OCE tenant namespace) holds presence and
+identity, and every turn runs on a per-conversation actor created from the
+openclaw plugin's golden template, suspended when idle and resumed on the
+next message. OCE itself is not modified.
+
+| Piece | What it does |
+|---|---|
+| Runtime image (`image.go`) | OCE's published runtime (`stable`, revision 54bfa7f) plus one layer: the substrate OpenClaw plugin and `kubectl-ate` from the always-on-agent gateway image, and `oce-substrate-bridge`. Built with go-containerregistry, no Docker. |
+| `oce-substrate-bridge` (`bridge/`) | Claims `before_agent_reply`, so every Agent turn, HTTP chat included (ACP bindings do not reach it), is answered by the conversation's actor. |
+| OCE install (`manifests/`) | PostgreSQL with the `occ_migrator` and `occ_app` roles, the bootstrap volume prepared 1000:1000 0700, Helm values without gateway routing or native admin, an Installation with Kubernetes Compute and the runtime on amd64, and a relay for `kubectl port-forward` (OCC listens on its pod IP). |
+| `gateway-policy.yaml` | A MutatingAdmissionPolicy (JSONPatch) for OCE gateway Pods in namespaces labeled `oce.substrate/enabled=true`: the ate-api token, the router client certificate, an in-cluster Kubernetes token for `kubectl-ate`'s trust-bundle read, the `ROUTER_*` variables and the actor token. |
+| `tenant.yaml` | Egress from the tenant's gateways to ate-api-server, atenet-router, the LLM gateway and the Kubernetes API; the LLM gateway's ingress from them; ClusterTrustBundle read for the tenant's ServiceAccounts. |
+| `agent-setup.yaml` | A Job that, with the bootstrap admin key (it never leaves the cluster), creates the Agent's Configuration, Secret grant and runtime credentials through OCE's API and deploys it. |
+| `check/turn.mjs` | One turn from inside the gateway Pod, as the bridge runs it. |
+
+Verified on a test cluster in us-east-1: the Agent's revision succeeds,
+OCE's model probe returns READY through the LLM gateway, a first turn
+creates `conv-...` from the golden snapshot in about 0.5 s and answers, and
+after `kubectl ate suspend` the next turn resumes it in about 0.1 s with the
+conversation intact.
+
+Not yet automated (done by hand, in this order, after the Agent's tenant
+namespace exists): the three tenant RoleBindings OCE documents, the
+namespace labels `ate.dev/api-access=true` and `oce.substrate/enabled=true`,
+Secret `oce-substrate-actor` (the openclaw plugin's actor token), editor on
+atespace `openclaw-demo` for the Agent's ServiceAccount, and its SPIFFE ID in
+atenet-router's `--ingress-allowed-spiffe-ids` (a `--deploy-control-plane`
+rerun drops it). HTTP chat to the gateway needs OCE's gateway routing, the
+trusted proxy OCE renders the gateway's auth for, which this setup leaves
+off.
+
 ## EKS Auto Mode
 
 With `AUTO_MODE=on` (the default), the cluster runs EKS Auto Mode next to

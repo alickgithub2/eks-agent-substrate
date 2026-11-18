@@ -19,6 +19,10 @@
 #     api.ate-system.svc), which kubectl-ate presents as --token-file;
 #   - router-client: a podidentity pod certificate and the servicedns CA, the
 #     mTLS client identity the bridge presents to atenet-router;
+#   - kube-api: an in-cluster Kubernetes token, CA and namespace (OCE turns
+#     automounting off), which kubectl-ate needs to read the servicedns
+#     ClusterTrustBundle it verifies ate-api-server against; the
+#     ServiceAccount may only read ClusterTrustBundles (tenant.yaml);
 #   - the ROUTER_* variables, and OPENCLAW_ACTOR_TOKEN from Secret
 #     oce-substrate-actor (the actors' bearer token).
 # Only Pods labeled openclaw.dev/workload-role=gateway in namespaces OCE manages
@@ -77,6 +81,19 @@ spec:
                   path: "router-ca.pem"}}
               ]}
             }},
+            JSONPatch{op: "add", path: "/spec/volumes/-", value: Object.spec.volumes{
+              name: "kube-api",
+              projected: Object.spec.volumes.projected{sources: [
+                Object.spec.volumes.projected.sources{serviceAccountToken: Object.spec.volumes.projected.sources.serviceAccountToken{
+                  expirationSeconds: 3600, path: "token"}},
+                Object.spec.volumes.projected.sources{configMap: Object.spec.volumes.projected.sources.configMap{
+                  name: "kube-root-ca.crt", items: [Object.spec.volumes.projected.sources.configMap.items{key: "ca.crt", path: "ca.crt"}]}},
+                Object.spec.volumes.projected.sources{downwardAPI: Object.spec.volumes.projected.sources.downwardAPI{
+                  items: [Object.spec.volumes.projected.sources.downwardAPI.items{path: "namespace",
+                    fieldRef: Object.spec.volumes.projected.sources.downwardAPI.items.fieldRef{fieldPath: "metadata.namespace"}}]}}
+              ]}
+            }},
+            JSONPatch{op: "add", path: "/spec/containers/0/volumeMounts/-", value: Object.spec.containers.volumeMounts{name: "kube-api", mountPath: "/var/run/secrets/kubernetes.io/serviceaccount", readOnly: true}},
             JSONPatch{op: "add", path: "/spec/containers/0/env/-", value: Object.spec.containers.env{name: "ROUTER_URL", value: "https://atenet-router.ate-system.svc.cluster.local:443"}},
             JSONPatch{op: "add", path: "/spec/containers/0/env/-", value: Object.spec.containers.env{name: "ROUTER_SERVER_NAME", value: "atenet-router.ate-system.svc"}},
             JSONPatch{op: "add", path: "/spec/containers/0/env/-", value: Object.spec.containers.env{name: "ROUTER_CA_FILE", value: "/var/run/router-client/router-ca.pem"}},
