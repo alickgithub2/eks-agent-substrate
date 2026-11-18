@@ -479,7 +479,8 @@ next message. OCE itself is not modified.
 | `gateway-policy.yaml` | A MutatingAdmissionPolicy (JSONPatch) for OCE gateway Pods in namespaces labeled `oce.substrate/enabled=true`: the ate-api token, the router client certificate, an in-cluster Kubernetes token for `kubectl-ate`'s trust-bundle read, the `ROUTER_*` variables and the actor token. |
 | `tenant.yaml` | Egress from the tenant's gateways to ate-api-server, atenet-router, the LLM gateway and the Kubernetes API; the LLM gateway's ingress from them; ClusterTrustBundle read for the tenant's ServiceAccounts. |
 | `agent-setup.yaml` | A Job that, with the bootstrap admin key (it never leaves the cluster), creates the Agent's Configuration, Secret grant and runtime credentials through OCE's API and deploys it. |
-| `check/turn.mjs` | One turn from inside the gateway Pod, as the bridge runs it. |
+| `check/chat.mjs` | Turns through the Agent's HTTP chat API from inside the gateway Pod (the plugin's Verify). |
+| `check/turn.mjs` | One turn from inside the gateway Pod, as the bridge runs it, without the HTTP API. |
 
 Verified on a test cluster in us-east-1: the Agent's revision succeeds,
 OCE's model probe returns READY through the LLM gateway, a first turn
@@ -487,15 +488,30 @@ creates `conv-...` from the golden snapshot in about 0.5 s and answers, and
 after `kubectl ate suspend` the next turn resumes it in about 0.1 s with the
 conversation intact.
 
-Not yet automated (done by hand, in this order, after the Agent's tenant
-namespace exists): the three tenant RoleBindings OCE documents, the
-namespace labels `ate.dev/api-access=true` and `oce.substrate/enabled=true`,
-Secret `oce-substrate-actor` (the openclaw plugin's actor token), editor on
-atespace `openclaw-demo` for the Agent's ServiceAccount, and its SPIFFE ID in
-atenet-router's `--ingress-allowed-spiffe-ids` (a `--deploy-control-plane`
-rerun drops it). HTTP chat to the gateway needs OCE's gateway routing, the
-trusted proxy OCE renders the gateway's auth for, which this setup leaves
-off.
+Deploy and check it with the plugin (it needs the openclaw and llm-gateway
+plugins, which it requires, and `helm` on the PATH):
+
+```bash
+OCE_AGENT_NAME=substrate-demo go -C native/installer run . --plugin-action deploy --plugins oce --cluster $C --region $R --profile $P
+go -C native/installer run . --plugin-action verify --plugins oce --cluster $C --region $R --profile $P
+```
+
+`verify` sends two turns through the Agent's own HTTP chat API (on the
+gateway Pod's loopback, with OCE's Driver-managed gateway password, which the
+Agent's Configuration selects) and checks the second recalls the first. To
+chat yourself, port-forward to the gateway Pod and use that password:
+
+```bash
+T=$(kubectl get ns -l openclaw.dev/namespace -o jsonpath='{.items[0].metadata.name}')
+kubectl -n $T port-forward deploy/gateway-<hash> 8080:8080   # its Secret is gateway-password-<hash>
+```
+
+What the plugin cannot keep on its own: atenet-router's
+`--ingress-allowed-spiffe-ids` is rendered from the plugins' static needs,
+so a later `--deploy-control-plane` drops the Agent's SPIFFE ID; deploy the
+oce plugin again after one. Plain HTTP chat through OCC (instead of
+port-forward) needs OCE's gateway routing (Envoy Gateway and cert-manager),
+which this setup leaves off.
 
 ## EKS Auto Mode
 

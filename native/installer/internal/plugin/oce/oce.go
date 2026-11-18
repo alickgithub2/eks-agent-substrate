@@ -656,9 +656,10 @@ func allowRouter(ctx context.Context, w io.Writer, o plugin.Options, id string) 
 	return errors.New("atenet-router has no " + routerFlag + " argument")
 }
 
-// agentID reads the Agent's ID off its gateway Deployment in tenant.
+// agentID reads the Agent's ID off its gateway Pod in tenant (OCE labels the
+// Pods, not the Deployment, with the workload role).
 func agentID(ctx context.Context, o plugin.Options, tenant string) (string, error) {
-	id, err := kubectl(ctx, o, "-n", tenant, "get", "deployments", "-l", "openclaw.dev/workload-role=gateway",
+	id, err := kubectl(ctx, o, "-n", tenant, "get", "pods", "-l", "openclaw.dev/workload-role=gateway",
 		"-o", `jsonpath={.items[0].metadata.labels.openclaw\.dev/agent}`)
 	if err != nil || id == "" {
 		return "", fmt.Errorf("no OCE Agent gateway in %s: deploy the oce plugin", tenant)
@@ -699,7 +700,7 @@ func verify(ctx context.Context, w io.Writer, o plugin.Options) error {
 	conv := "oce-verify-" + word
 	out, err := kubectl(ctx, o, "-n", tenant, "exec", pod, "-c", "gateway", "--", "node", "--input-type=module", "-e", string(chatScript),
 		conv, "Remember the codeword "+word+". Reply only with OK.", "What was the codeword? Reply with just the word.")
-	fmt.Fprint(w, out)
+	fmt.Fprintln(w, out)
 	if err != nil {
 		return fmt.Errorf("the chat turns failed: %w", err)
 	}
