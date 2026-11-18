@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -217,7 +218,8 @@ var (
 		if c.CertificateAuthority != nil {
 			ca = aws.ToString(c.CertificateAuthority.Data)
 		}
-		return probeAPI(ctx, aws.ToString(c.Endpoint), ca)
+		endpoint, serverName := apiEndpoint(aws.ToString(c.Endpoint))
+		return probeAPIAs(ctx, endpoint, serverName, ca)
 	}
 )
 
@@ -228,13 +230,31 @@ var (
 // on a new connection. Any HTTP answer counts (401 included): the request
 // carries no credentials, and only reaching the server matters.
 func probeAPI(ctx context.Context, endpoint, caData string) error {
+	return probeAPIAs(ctx, endpoint, "", caData)
+}
+
+// apiEndpoint is where this machine reaches the cluster's endpoint: the
+// endpoint itself, or EKS_API_ENDPOINT (an https://host:port that forwards to
+// it, such as an SSM port forward to the private endpoint from a network
+// that cannot reach the public one), with the endpoint's host as the TLS
+// server name so the cluster CA still verifies it.
+func apiEndpoint(endpoint string) (string, string) {
+	via := strings.TrimRight(os.Getenv("EKS_API_ENDPOINT"), "/")
+	if via == "" {
+		return endpoint, ""
+	}
+	return via, strings.TrimPrefix(strings.TrimPrefix(endpoint, "https://"), "http://")
+}
+
+// probeAPIAs is probeAPI with serverName, when set, as the TLS server name.
+func probeAPIAs(ctx context.Context, endpoint, serverName, caData string) error {
 	pem, err := base64.StdEncoding.DecodeString(caData)
 	pool := x509.NewCertPool()
 	if endpoint == "" || err != nil || !pool.AppendCertsFromPEM(pem) {
 		return errors.New("the cluster reports no endpoint or certificate authority")
 	}
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.DisableKeepAlives, t.TLSClientConfig = true, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	t.DisableKeepAlives, t.TLSClientConfig = true, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12, ServerName: serverName}
 	client := &http.Client{Transport: t, Timeout: probeTimeout}
 	get := func() error {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/version", nil)

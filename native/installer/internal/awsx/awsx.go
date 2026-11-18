@@ -255,7 +255,17 @@ func WriteKubeconfig(path string, cl Cluster, region, profile string) error {
 	var b strings.Builder
 	ctx := cl.Name
 	fmt.Fprintf(&b, "apiVersion: v1\nkind: Config\ncurrent-context: %s\n", ctx)
-	fmt.Fprintf(&b, "clusters:\n- name: %s\n  cluster:\n    server: %s\n    certificate-authority-data: %s\n", ctx, cl.Endpoint, cl.CA)
+	server, tlsName := cl.Endpoint, ""
+	// EKS_API_ENDPOINT: reach the API through a forward to it (an SSM port
+	// forward to the private endpoint), verifying the cluster's certificate
+	// for its own host name.
+	if via := strings.TrimRight(os.Getenv("EKS_API_ENDPOINT"), "/"); via != "" {
+		server, tlsName = via, strings.TrimPrefix(cl.Endpoint, "https://")
+	}
+	fmt.Fprintf(&b, "clusters:\n- name: %s\n  cluster:\n    server: %s\n    certificate-authority-data: %s\n", ctx, server, cl.CA)
+	if tlsName != "" {
+		fmt.Fprintf(&b, "    tls-server-name: %s\n", tlsName)
+	}
 	fmt.Fprintf(&b, "contexts:\n- name: %s\n  context:\n    cluster: %s\n    user: %s\n", ctx, ctx, ctx)
 	fmt.Fprintf(&b, "users:\n- name: %s\n  user:\n    exec:\n      apiVersion: client.authentication.k8s.io/v1beta1\n      command: aws\n      interactiveMode: Never\n      args:\n", ctx)
 	for _, a := range args {
