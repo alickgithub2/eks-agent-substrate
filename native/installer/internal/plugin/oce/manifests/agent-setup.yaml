@@ -1,0 +1,143 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# One OCE Agent on Agent Substrate, made through OCE's HTTP API by a Job in
+# the cluster: it reads the installation's initial admin service key from the
+# bootstrap volume (the key never leaves the cluster), then creates the model
+# Secret, the Configuration (the oce-substrate-bridge plugin, conversations as
+# actors of REPLACE_WITH_TEMPLATE in atespace REPLACE_WITH_ATESPACE), the
+# Agent, its Secret grant and runtime credentials, deploys it and waits for
+# the revision. It prints IDs only. It carries app: occ-relay, the label the
+# chart's API NetworkPolicy admits (api.clients).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: oce-agent-setup
+  namespace: openclaw-system
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: occ-relay
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        # EKS Auto Mode nodes (Bottlerocket) enforce SELinux, and the claim
+        # keeps the label of the chart's initialization Job; relabel it for
+        # this Pod on mount, or the key is unreadable (EACCES) even to its
+        # owner.
+        seLinuxChangePolicy: Recursive
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: setup
+          image: REPLACE_WITH_CONTROLLER_IMAGE
+          env:
+            - { name: OCC_URL, value: "http://openclaw-enterprise-api.openclaw-system.svc.cluster.local:8080" }
+            - { name: KEY_FILE, value: /bootstrap/initial-admin-service-key.json }
+            - { name: AGENT_NAME, value: REPLACE_WITH_AGENT_NAME }
+            - { name: ATESPACE, value: REPLACE_WITH_ATESPACE }
+            - { name: TEMPLATE, value: REPLACE_WITH_TEMPLATE }
+            - name: EGRESS_POLICY
+              value: '{"rules":[{"http":{"hostnames":["llm-gateway.llm-gateway.svc.cluster.local"],"ports":{"numbers":[80]},"effects":{"replaceHeaders":[{"header":"Authorization","prefix":"Bearer ","actorJwt":{"audiences":["llm-gateway"],"expirationSeconds":900}}]}}}]}'
+          command: ["node", "--input-type=module", "-e"]
+          args:
+            - |
+              import { readFileSync, readdirSync, statSync } from "node:fs";
+              const base = process.env.OCC_URL;
+              let key;
+              try {
+                key = JSON.parse(readFileSync(process.env.KEY_FILE, "utf8")).data.key;
+              } catch (e) {
+                for (const f of readdirSync("/bootstrap")) { const s = statSync("/bootstrap/" + f); console.log("bootstrap entry", f, "uid", s.uid, "gid", s.gid, "mode", (s.mode & 0o777).toString(8)); }
+                console.log("process uid", process.getuid(), "gid", process.getgid(), "groups", process.getgroups());
+                throw new Error("cannot read the bootstrap service key: " + e.code);
+              }
+              const call = async (method, path, body) => {
+                const headers = body === undefined ? { "x-api-key": key } : { "x-api-key": key, "content-type": "application/json" };
+                const r = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+                const t = await r.text(); let j; try { j = JSON.parse(t); } catch { j = { raw: t.slice(0, 300) }; }
+                if (!r.ok) { const e = new Error(method + " " + path + " -> " + r.status + " " + JSON.stringify(j.error ?? j).slice(0, 600)); e.status = r.status; throw e; }
+                return j.data;
+              };
+              const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+              const nss = await call("GET", "/namespaces");
+              const ns = (Array.isArray(nss) ? nss : nss.items ?? []).find((n) => n.name === "default");
+              if (!ns) throw new Error("no Namespace default");
+              for (let i = 0; i < 90; i++) { const n = await call("GET", "/namespaces/" + ns.id); if (n.status === "ready") break; if (n.status === "failed") throw new Error("Namespace failed"); await sleep(5000); }
+              console.log("namespace", ns.id, "ready");
+              const values = {
+                gateway: { mode: "local", bind: "lan", http: { endpoints: { chatCompletions: { enabled: true } } } },
+                plugins: {
+                  load: { paths: ["/opt/oce-substrate/oce-bridge"] },
+                  allow: ["oce-substrate-bridge"],
+                  entries: { "oce-substrate-bridge": { enabled: true, hooks: { allowConversationAccess: true }, config: {
+                    atespace: process.env.ATESPACE, template: process.env.TEMPLATE,
+                    actorDomain: "actors.resources.substrate.ate.dev", actorToken: "${OPENCLAW_ACTOR_TOKEN}",
+                    kubectlAtePath: "/usr/local/bin/kubectl-ate", ateapiAddress: "api.ate-system.svc:443",
+                    ateTokenFile: "/var/run/ate-api/token", egressPolicy: JSON.parse(process.env.EGRESS_POLICY),
+                    idleTimeoutSeconds: 30 } } },
+                },
+                // OCE requires each model's Harness runtime explicitly.
+                agents: { defaults: { model: "llmgw/claude", skipBootstrap: true, models: { "llmgw/claude": { agentRuntime: { id: "openclaw" } } } } },
+                models: { providers: { llmgw: { baseUrl: "http://llm-gateway.llm-gateway.svc.cluster.local/v1", api: "openai-completions",
+                  apiKey: "${OCE_MODEL_API_KEY}", models: [{ id: "claude", name: "Claude on Amazon Bedrock (llm-gateway)" }] } } },
+              };
+              // A rerun reuses the Agent of this name and only deploys it.
+              const listed = await call("GET", "/namespaces/" + ns.id + "/agents");
+              let agent = (Array.isArray(listed) ? listed : listed.items ?? []).find((a) => a.name === process.env.AGENT_NAME);
+              if (agent) {
+                await call("PATCH", "/namespaces/" + ns.id + "/configurations/" + agent.configurationId, { values });
+                console.log("configuration", agent.configurationId, "updated");
+              } else {
+              // The model key: the in-cluster LLM gateway authenticates by
+              // NetworkPolicy, so this is a placeholder, not a credential.
+              const secret = await call("POST", "/namespaces/" + ns.id + "/secrets", { name: process.env.AGENT_NAME + "-model", value: "placeholder-llm-gateway-uses-network-policy" });
+              const cfg = await call("POST", "/namespaces/" + ns.id + "/configurations", { kind: "agent", values });
+              agent = await call("POST", "/namespaces/" + ns.id + "/agents", { name: process.env.AGENT_NAME, configurationId: cfg.id, executionMode: "embedded",
+                harnessAuth: { method: "api_key", source: { kind: "secret", namespaceId: ns.id, id: secret.id } } });
+              console.log("agent", agent.id, "servicePrincipal", agent.servicePrincipalId, "configuration", cfg.id);
+              const role = await call("POST", "/namespaces/" + ns.id + "/iam/roles", { name: process.env.AGENT_NAME + " model secret", permissions: [{ action: "operate", resourceKind: "secret" }] });
+              await call("POST", "/namespaces/" + ns.id + "/iam/access-bindings", { subjectKind: "identity", subjectId: agent.servicePrincipalId, roleId: role.id, resourceKind: "secret", resourceId: secret.id });
+              }
+              console.log("agent", agent.id, "servicePrincipal", agent.servicePrincipalId);
+              try { await call("POST", "/namespaces/" + ns.id + "/agents/" + agent.id + "/runtime-credentials", {}); }
+              catch (e) { if (e.status !== 409) throw e; console.log("runtime credentials already provisioned"); }
+              const rev = await call("POST", "/namespaces/" + ns.id + "/agents/" + agent.id + "/deploy");
+              console.log("revision", rev.id);
+              let st;
+              for (let i = 0; i < 180; i++) {
+                st = await call("GET", "/namespaces/" + ns.id + "/agents/" + agent.id + "/deployments/" + rev.id);
+                if (st.status === "succeeded" || st.status === "failed") break;
+                await sleep(5000);
+              }
+              console.log("deployment", JSON.stringify({ status: st.status, error: st.error, progress: st.progress }).slice(0, 1500));
+              if (st.status !== "succeeded") process.exit(1);
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: bootstrap, mountPath: /bootstrap, readOnly: true }
+      volumes:
+        - name: bootstrap
+          # Read-write at the volume, so kubelet can relabel it (above); the
+          # container's mount is read-only.
+          persistentVolumeClaim:
+            claimName: occ-bootstrap
