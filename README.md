@@ -579,6 +579,22 @@ the EKS API endpoint limited to your own ranges (`EKS_PUBLIC_ACCESS_CIDRS`).
 
 ## Known limits
 
+- OpenClaw on the AWS Nitro sandbox (`OPENCLAW_SANDBOX=nitro`) does not start
+  yet. A Nitro worker is a network-transport worker: atelet streams the actor's
+  image layers into the worker's guest, and the worker's staging extractor
+  (`internal/workerstaging/archive.go` in the mode 3 release) creates every
+  file and directory without the tar header's owner, so the whole image is
+  root-owned inside the actor. The node-local unpack
+  (`internal/imagecache/unpack.go`) restores owners with `tarutil.Lchown`.
+  OpenClaw runs as uid 1000 and its home is mode 0700, so it stops with
+  `EACCES` on `/home/node/.openclaw/state`, and its secure temp-dir check
+  refuses root-owned directories. A probe actor on the Nitro pool shows
+  `/home/node/.openclaw uid=0 mode=700` for an image that ships it as
+  1000:1000, while a directory it makes on the sandbox's `/tmp` is its own.
+  Any image with a non-root user and private directories is affected; the
+  counter demo is not. Until the extractor applies owners, run OpenClaw on
+  the gvisor node group (`OPENCLAW_SANDBOX=gvisor`, the default).
+
 - Resource names derive from `CLUSTER_NAME` and the Region. Global names (S3
   buckets, IAM roles) also carry the Region, and the installer only reuses or
   deletes them when they have the owner tag
